@@ -1,0 +1,1 @@
+Basic calculator implementation with add, subtract, multiply, and divide operations. Includes styling for a clean calculator interface.
