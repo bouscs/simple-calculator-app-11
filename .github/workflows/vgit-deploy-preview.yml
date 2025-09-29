@@ -18,20 +18,26 @@ on:
         description: "GitHub username"
         required: true
         type: string
-      project_name:
-        description: "Project name"
-        required: true
-        type: string
       force_rebuild:
         description: "Force rebuild even if no changes"
         required: false
         type: boolean
         default: false
+      environment:
+        description: "GitHub environment to use for deployment"
+        required: false
+        type: string
+      runtime_vars:
+        description: "Comma-separated list of env var names to expose at runtime"
+        required: false
+        type: string
+        default: ""
 
 jobs:
   deploy-preview:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    environment: ${{ github.event.inputs.environment || '' }}
 
     steps:
       - name: Validate inputs
@@ -131,6 +137,55 @@ jobs:
           echo "📦 Installing dependencies..."
           npm install
 
+      - name: Prepare runtime environment variables
+        run: |
+          echo "🔧 Preparing runtime environment variables..."
+          
+          # Parse runtime_vars input (comma-separated list)
+          RUNTIME_VARS="${{ github.event.inputs.runtime_vars }}"
+          
+          if [ -n "$RUNTIME_VARS" ] && [ "$RUNTIME_VARS" != "" ]; then
+            echo "📋 Runtime variables to expose: $RUNTIME_VARS"
+            
+            # Create a script to export VITE_ prefixed versions
+            echo "#!/bin/bash" > runtime_env_setup.sh
+            echo "# Auto-generated runtime environment variables" >> runtime_env_setup.sh
+            
+            # Split comma-separated values and create VITE_ versions
+            IFS=',' read -ra VARS <<< "$RUNTIME_VARS"
+            for var in "${VARS[@]}"; do
+              # Trim whitespace
+              var=$(echo "$var" | xargs)
+              
+              if [ -n "$var" ]; then
+                # Convert to uppercase
+                upper_var=$(echo "$var" | tr '[:lower:]' '[:upper:]')
+                vite_var="VITE_$upper_var"
+                
+                echo "Creating runtime variable: $upper_var -> $vite_var"
+                
+                # Add export statement to script
+                echo "if [ -n \"\${$upper_var}\" ]; then" >> runtime_env_setup.sh
+                echo "  export $vite_var=\"\${$upper_var}\"" >> runtime_env_setup.sh
+                echo "  echo \"✅ Exposed $upper_var as $vite_var\"" >> runtime_env_setup.sh
+                echo "else" >> runtime_env_setup.sh
+                echo "  echo \"⚠️ $upper_var not found in environment\"" >> runtime_env_setup.sh
+                echo "fi" >> runtime_env_setup.sh
+              fi
+            done
+            
+            # Make the script executable
+            chmod +x runtime_env_setup.sh
+            
+            echo "🔍 Runtime environment setup script created:"
+            cat runtime_env_setup.sh
+          else
+            echo "ℹ️ No runtime variables specified, skipping VITE_ prefix setup"
+            echo "#!/bin/bash" > runtime_env_setup.sh
+            echo "echo 'No runtime variables to expose'" >> runtime_env_setup.sh
+            chmod +x runtime_env_setup.sh
+          fi
+
       - name: Run pre-build checks
         if: env.PROJECT_TYPE == 'nodejs'
         run: |
@@ -158,6 +213,10 @@ jobs:
         if: env.HAS_BUILD_SCRIPT == 'true'
         run: |
           echo "🏗️ Building project..."
+          
+          echo "🔧 Sourcing runtime environment variables before build..."
+          source ./runtime_env_setup.sh
+          
           npm run build || {
             echo "❌ Build failed"
             exit 1
@@ -217,7 +276,7 @@ jobs:
       - name: Install Netlify CLI
         run: |
           echo "🌐 Installing Netlify CLI..."
-          npm install -g netlify-cli
+          npm install -g netlify-cli@17.10.1
           netlify --version
 
       - name: Deploy to Netlify
@@ -247,8 +306,17 @@ jobs:
               exit 1
             }
           else
-            echo "🔍 Deploying preview with branch alias..."
-            DEPLOY_OUTPUT=$(netlify deploy --dir="${BUILD_DIR}" --alias="${{ github.event.inputs.branch_name }}" --json) || {
+            # Determine alias to use (prioritize NETLIFY_DEPLOY_ALIAS_NAME)
+            if [ -n "${{ secrets.NETLIFY_DEPLOY_ALIAS_NAME }}" ]; then
+              echo "🔍 Using custom deploy alias: ${{ secrets.NETLIFY_DEPLOY_ALIAS_NAME }}"
+              DEPLOY_ALIAS="${{ secrets.NETLIFY_DEPLOY_ALIAS_NAME }}"
+            else
+              echo "🔍 Using branch name as alias: ${{ github.event.inputs.branch_name }}"
+              DEPLOY_ALIAS="${{ github.event.inputs.branch_name }}"
+            fi
+
+            echo "🚀 Deploying preview with alias: ${DEPLOY_ALIAS}"
+            DEPLOY_OUTPUT=$(netlify deploy --dir="${BUILD_DIR}" --alias="${DEPLOY_ALIAS}" --json) || {
               echo "❌ Preview deployment failed"
               exit 1
             }
