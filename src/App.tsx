@@ -6,6 +6,9 @@ import './App.css'
 function App() {
   const [count, setCount] = useState(0)
 
+  console.log("ANTHROPIC_API_KEY = " + import.meta.env.VITE_ANTHROPIC_API_KEY);
+  console.log("import.meta.env", import.meta.env);
+
   return (
     <>
       <div>
