@@ -137,9 +137,26 @@ jobs:
           echo "📦 Installing dependencies..."
           npm install
 
+      - name: Export all secrets as environment variables dynamically
+        run: |
+          echo "🔐 Dynamically exporting all secrets as environment variables..."
+          if [ "$SECRETS_JSON" != "null" ] && [ "$SECRETS_JSON" != "" ]; then
+            echo "📋 Processing secrets from environment..."
+            echo "$SECRETS_JSON" | jq -r 'to_entries | .[] | "\(.key)=\(.value)"' >> $GITHUB_ENV
+            echo "✅ All secrets exported as environment variables"
+          else
+            echo "ℹ️ No secrets found in environment"
+          fi
+        env:
+          SECRETS_JSON: ${{ toJson(secrets) }}
+
       - name: Prepare runtime environment variables
         run: |
           echo "🔧 Preparing runtime environment variables..."
+          
+          # Debug: Show which environment variables are available (names only, not values)
+          echo "🔍 Available environment variables (for debugging):"
+          env | grep -E '^(ANTHROPIC|SUBSCRIBE|OPENAI|CUSTOM)' | cut -d'=' -f1 | sort || echo "No addon-related environment variables found"
           
           # Parse runtime_vars input (comma-separated list)
           RUNTIME_VARS="${{ github.event.inputs.runtime_vars }}"
