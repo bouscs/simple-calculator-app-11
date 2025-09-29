@@ -1,0 +1,1 @@
+Updated App.css to set fuchsia background color on body element
