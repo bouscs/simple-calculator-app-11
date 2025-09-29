@@ -23,11 +23,21 @@ on:
         required: false
         type: string
         default: "main"
+      environment:
+        description: "GitHub environment to use for deployment"
+        required: false
+        type: string
+      runtime_vars:
+        description: "Comma-separated list of env var names to expose at runtime"
+        required: false
+        type: string
+        default: ""
 
 jobs:
   create-feature:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    environment: ${{ github.event.inputs.environment || '' }}
     permissions:
       contents: write # For git operations (checkout, commit, push)
       actions: read # For workflow operations
@@ -84,6 +94,72 @@ jobs:
             npm install
           else
             echo "⚠️ No package.json found, skipping dependency installation"
+          fi
+
+      - name: Export all secrets as environment variables dynamically
+        run: |
+          echo "🔐 Dynamically exporting all secrets as environment variables..."
+          if [ "$SECRETS_JSON" != "null" ] && [ "$SECRETS_JSON" != "" ]; then
+            echo "📋 Processing secrets from environment..."
+            echo "$SECRETS_JSON" | jq -r 'to_entries | .[] | "\(.key)=\(.value)"' >> $GITHUB_ENV
+            echo "✅ All secrets exported as environment variables"
+          else
+            echo "ℹ️ No secrets found in environment"
+          fi
+        env:
+          SECRETS_JSON: ${{ toJson(secrets) }}
+
+      - name: Prepare runtime environment variables
+        run: |
+          echo "🔧 Preparing runtime environment variables..."
+          
+          # Debug: Show which environment variables are available (names only, not values)
+          echo "🔍 Available environment variables (for debugging):"
+          env | grep -E '^(ANTHROPIC|SUBSCRIBE|OPENAI|CUSTOM)' | cut -d'=' -f1 | sort || echo "No addon-related environment variables found"
+          
+          # Parse runtime_vars input (comma-separated list)
+          RUNTIME_VARS="${{ github.event.inputs.runtime_vars }}"
+          
+          if [ -n "$RUNTIME_VARS" ] && [ "$RUNTIME_VARS" != "" ]; then
+            echo "📋 Runtime variables to expose: $RUNTIME_VARS"
+            
+            # Create a script to export VITE_ prefixed versions
+            echo "#!/bin/bash" > runtime_env_setup.sh
+            echo "# Auto-generated runtime environment variables" >> runtime_env_setup.sh
+            
+            # Split comma-separated values and create VITE_ versions
+            IFS=',' read -ra VARS <<< "$RUNTIME_VARS"
+            for var in "${VARS[@]}"; do
+              # Trim whitespace
+              var=$(echo "$var" | xargs)
+              
+              if [ -n "$var" ]; then
+                # Convert to uppercase
+                upper_var=$(echo "$var" | tr '[:lower:]' '[:upper:]')
+                vite_var="VITE_$upper_var"
+                
+                echo "Creating runtime variable: $upper_var -> $vite_var"
+                
+                # Add export statement to script
+                echo "if [ -n \"\${$upper_var}\" ]; then" >> runtime_env_setup.sh
+                echo "  export $vite_var=\"\${$upper_var}\"" >> runtime_env_setup.sh
+                echo "  echo \"✅ Exposed $upper_var as $vite_var\"" >> runtime_env_setup.sh
+                echo "else" >> runtime_env_setup.sh
+                echo "  echo \"⚠️ $upper_var not found in environment\"" >> runtime_env_setup.sh
+                echo "fi" >> runtime_env_setup.sh
+              fi
+            done
+            
+            # Make the script executable
+            chmod +x runtime_env_setup.sh
+            
+            echo "🔍 Runtime environment setup script created:"
+            cat runtime_env_setup.sh
+          else
+            echo "ℹ️ No runtime variables specified, skipping VITE_ prefix setup"
+            echo "#!/bin/bash" > runtime_env_setup.sh
+            echo "echo 'No runtime variables to expose'" >> runtime_env_setup.sh
+            chmod +x runtime_env_setup.sh
           fi
 
       - name: Implement feature with Claude (SDK)
@@ -288,8 +364,17 @@ jobs:
           if [ -f "package.json" ] && (grep -q '"build"' package.json || grep -q '"dev"' package.json); then
             echo "📦 Web project detected, attempting preview deployment..."
             
-            # Build the project
+            # Build the project with runtime environment variables
             if grep -q '"build"' package.json; then
+              echo "🔐 Re-exporting secrets for build step..."
+              if [ "$SECRETS_JSON" != "null" ] && [ "$SECRETS_JSON" != "" ]; then
+                eval $(echo "$SECRETS_JSON" | jq -r 'to_entries | .[] | "export \(.key)=\"\(.value)\""')
+                echo "✅ Secrets re-exported for build step"
+              fi
+              
+              echo "🔧 Sourcing runtime environment variables before build..."
+              source ./runtime_env_setup.sh
+              
               npm run build && {
                 echo "PREVIEW_BUILD_SUCCESS=true" >> $GITHUB_ENV
                 echo "✅ Build successful"
@@ -305,6 +390,8 @@ jobs:
             echo "ℹ️ Not a web project, skipping preview deployment"
             echo "PREVIEW_BUILD_SUCCESS=false" >> $GITHUB_ENV
           fi
+        env:
+          SECRETS_JSON: ${{ toJson(secrets) }}
 
       - name: Detect build output directory
         if: env.PREVIEW_BUILD_SUCCESS == 'true'
@@ -356,11 +443,10 @@ jobs:
           ls -la "${BUILD_DIR}"
 
       - name: Deploy to Netlify (if build succeeded)
-        id: netlify-deploy
         if: env.PREVIEW_BUILD_SUCCESS == 'true'
         run: |
           echo "🚀 Installing and using Netlify CLI directly..."
-          npm install -g netlify-cli
+          npm install -g netlify-cli@17.10.1
 
           # Deploy and capture output
           netlify deploy --dir=${{ env.BUILD_DIR }} --json > deploy_output.json
@@ -450,13 +536,13 @@ jobs:
             await page.setViewportSize({ width: 1280, height: 720 });
             
             console.log('📄 Navigating to:', process.env.PREVIEW_URL);
-            await page.goto(process.env.PREVIEW_URL, { 
-              waitUntil: 'networkidle',
-              timeout: 60000 
+            await page.goto(process.env.PREVIEW_URL, {
+              waitUntil: 'domcontentloaded',
+              timeout: 20000
             });
             
             // Wait for page to stabilize
-            await page.waitForTimeout(2000);
+            await page.waitForTimeout(1000);
             
             console.log('📸 Capturing screenshot...');
             const screenshot = await page.screenshot({ 
