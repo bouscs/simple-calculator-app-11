@@ -1,0 +1,1 @@
+Updated index.css to set background-color to gray (#808080) for both root and body elements
