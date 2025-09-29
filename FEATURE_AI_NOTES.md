@@ -1,0 +1,1 @@
+Added red background color to body in App.css
