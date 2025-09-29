@@ -231,6 +231,12 @@ jobs:
         run: |
           echo "🏗️ Building project..."
           
+          echo "🔐 Re-exporting secrets for build step..."
+          if [ "$SECRETS_JSON" != "null" ] && [ "$SECRETS_JSON" != "" ]; then
+            eval $(echo "$SECRETS_JSON" | jq -r 'to_entries | .[] | "export \(.key)=\"\(.value)\""')
+            echo "✅ Secrets re-exported for build step"
+          fi
+          
           echo "🔧 Sourcing runtime environment variables before build..."
           source ./runtime_env_setup.sh
           
@@ -240,6 +246,8 @@ jobs:
           }
           echo "✅ Build completed successfully"
           echo "BUILD_SUCCESS=true" >> $GITHUB_ENV
+        env:
+          SECRETS_JSON: ${{ toJson(secrets) }}
 
       - name: Detect build output directory
         run: |
